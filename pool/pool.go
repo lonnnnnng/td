@@ -183,6 +183,8 @@ retry:
 		conn := c.createConnection(id)
 		select {
 		case <-ctx.Done():
+			// long: 请求取消不终止池级建连；连接稍后就绪时必须归还，否则会永久占住一个名额。
+			go c.releaseWhenReady(conn)
 			return nil, ctx.Err()
 		case <-c.ctx.Done():
 			return nil, errors.Wrap(c.ctx.Err(), "DC closed")
@@ -236,6 +238,18 @@ retry:
 	}
 
 	return nil, err
+}
+
+func (c *DC) releaseWhenReady(conn *poolConn) {
+	select {
+	case <-conn.Ready():
+		// long: 关闭和就绪可同时发生，已关闭的池或已退出的连接不再接收新借用者。
+		if c.ctx.Err() == nil && !conn.deleted.Load() {
+			c.release(conn)
+		}
+	case <-conn.Dead():
+	case <-c.ctx.Done():
+	}
 }
 
 // Invoke sends MTProto request using one of pool connection.
